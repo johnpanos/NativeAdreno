@@ -24,6 +24,12 @@ static bool importedUntouched(const NativeAdrenoMemory *memory) {return memory->
 extern "C" {volatile uint32_t native_adreno_skip_written_imports;}
 static bool writtenImportSkipped(const NativeAdrenoMemory *memory,uint32_t permissions)
 {return memory->imported() && native_adreno_skip_written_imports && (permissions&ArmSmmu4KWrite);}
+/* A board whose userland keeps the import contract (NativeAdrenoABI.h: the importer cleans its caches before GPU use; the native Metal
+ * frontend cleans each import whose surface seed moved, at commit) may skip publishing the read-only imports as well
+ * (native_adreno_skip_readonly_imports). Publishing then maintains only owned BOs. */
+extern "C" {volatile uint32_t native_adreno_skip_readonly_imports;}
+static bool readOnlyImportSkipped(const NativeAdrenoMemory *memory,uint32_t permissions)
+{return memory->imported() && native_adreno_skip_readonly_imports && !(permissions&ArmSmmu4KWrite);}
 static bool overlap(uint64_t a,uint64_t ab,uint64_t b,uint64_t bb)
 {return a<b+bb && b<a+ab;}
 /* Mappings of one cache/shareability/privilege class may share pages; only pages shared across classes refuse. */
@@ -342,7 +348,8 @@ IOReturn NativeAdrenoVm::publishMapped()
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory)continue;
-        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
+        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions) ||
+           readOnlyImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         /* Per-submission maintenance, by kind (the board's kcmd gpu): [0] imported bytes, [1] owned bytes, [2] imported, [3] owned objects. */
         const bool imported=m.memory->imported();
         native_adreno_maint_stats[imported?0:1]+=m.memory->bytes();native_adreno_maint_stats[imported?2:3]+=1;
