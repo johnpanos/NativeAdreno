@@ -41,6 +41,8 @@ class NativeAdrenoSubmit final {
     NativeAdrenoRing *ring_=nullptr;
     NativeAdrenoSubmitStats stats_{};
     bool attached_=false,poisoned_=false;
+    bool acquired_valid_=false;   /* acquired_fence_ holds: every job up to it completed before the last acquireImported */
+    uint32_t acquired_fence_=0;
     uint32_t audit_tick_=0;   /* submissions since attach; every eighth one audits its IB lines */
     Job *find(uint32_t fence);
     Job *free();

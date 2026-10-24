@@ -30,6 +30,12 @@ static bool writtenImportSkipped(const NativeAdrenoMemory *memory,uint32_t permi
 extern "C" {volatile uint32_t native_adreno_skip_readonly_imports;}
 static bool readOnlyImportSkipped(const NativeAdrenoMemory *memory,uint32_t permissions)
 {return memory->imported() && native_adreno_skip_readonly_imports && !(permissions&ArmSmmu4KWrite);}
+/* The publish side only of GPU-written imports (native_adreno_skip_written_publish): under the same import contract as the read-only skip
+ * (the frontend cleans an import whose surface seed moved, at commit), publishing them again is redundant; the acquire after each completed
+ * job (clean and invalidate) still runs, so CPU readers see the GPU's writes. */
+extern "C" {volatile uint32_t native_adreno_skip_written_publish;}
+static bool writtenPublishSkipped(const NativeAdrenoMemory *memory,uint32_t permissions)
+{return memory->imported() && native_adreno_skip_written_publish && (permissions&ArmSmmu4KWrite);}
 static bool overlap(uint64_t a,uint64_t ab,uint64_t b,uint64_t bb)
 {return a<b+bb && b<a+ab;}
 /* Mappings of one cache/shareability/privilege class may share pages; only pages shared across classes refuse. */
@@ -349,7 +355,7 @@ IOReturn NativeAdrenoVm::publishMapped()
         const Mapping &m=mappings_[i];
         if(!m.memory)continue;
         if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions) ||
-           readOnlyImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
+           readOnlyImportSkipped(m.memory,m.permissions) || writtenPublishSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         /* Per-submission maintenance, by kind (the board's kcmd gpu): [0] imported bytes, [1] owned bytes, [2] imported, [3] owned objects. */
         const bool imported=m.memory->imported();
         native_adreno_maint_stats[imported?0:1]+=m.memory->bytes();native_adreno_maint_stats[imported?2:3]+=1;

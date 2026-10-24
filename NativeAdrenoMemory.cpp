@@ -294,12 +294,13 @@ IOReturn NativeAdrenoMemory::publishForDevice(size_t offset,size_t bytes,bool wr
     return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+offset,bytes,
         writes?NativeAdrenoCleanInvalidate:NativeAdrenoClean);
 }
+extern "C" volatile uint32_t native_adreno_uncached_acquire_skip;
 IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
 {
     if(!backed() || !prepared_ || quarantined_)return kIOReturnNotReady;
     if(!bytes || ((offset|bytes)&4095) || offset>bytes_ || bytes>bytes_-offset)return kIOReturnBadArgument;
     /* Imported pages may hold the owner's unrelated dirty lines next to the GPU's writes: clean as well as invalidate. */
-    if(imported_)return maintainImported(offset,bytes,NativeAdrenoCleanInvalidate);
+    if(imported_)return maintainImported(offset,bytes,NativeAdrenoCleanInvalidate,native_adreno_uncached_acquire_skip!=0);
     if(write_combined_)return kIOReturnSuccess;
     return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+offset,bytes,NativeAdrenoInvalidate);
 }
@@ -310,6 +311,8 @@ IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
  * of them were cleaned and invalidated on every submission while the desktop scrolled). Null (host, other boards): every page is maintained.
  * The acquire side keeps its maintenance: the kernel's physical aperture still maps those pages cacheable and may hold clean lines. */
 extern "C" {bool (*native_adreno_page_uncached)(uint64_t physical);volatile uint64_t native_adreno_uncached_skipped;}
+/* Opt-in (a board that knows no kernel path reads those pages through a cacheable alias): the acquire side skips the uncached pages too. */
+extern "C" {volatile uint32_t native_adreno_uncached_acquire_skip;}
 IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op,bool publish)
 {
     bool (*const uncached)(uint64_t)=publish?native_adreno_page_uncached:nullptr;

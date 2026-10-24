@@ -8,6 +8,8 @@
 extern "C" {volatile uint64_t native_adreno_submit_time[8];}
 /* The last 64 submissions, slot (n-1)&63 for submission n: [0] start (mach ticks), [1] total, [2] publishMapped. */
 extern "C" {volatile uint64_t native_adreno_submit_ring[64][3];}
+/* Job releases: [0] that ran acquireImported, [1] that an earlier acquire already covered. */
+extern "C" {volatile uint64_t native_adreno_acquire_stats[2];}
 
 /* CP_INDIRECT_BUFFER is opcode 0x3f with a 3-word payload: 64-bit GPU address
  * and IB_SIZE in dwords (bits 0..19), exactly as the pinned adreno_pm4.xml
@@ -56,7 +58,16 @@ IOReturn NativeAdrenoSubmit::release(Job &job)
         if(retired)status=retired;else ++stats_.references_retired;
     }
     if(status)return poison();
-    if(vm_->acquireImported())return poison();
+    /* One acquire covers every job that had completed when it began: a job whose fence an earlier acquire already covers (several jobs
+     * retired in one sweep, or a client's wait after the sweep) needs none of its own. */
+    if(!acquired_valid_ || (int32_t)(job.fence-acquired_fence_)>0) {
+        uint32_t covered=ring_->completedFence();
+        if((int32_t)(covered-job.fence)<0)covered=job.fence;
+        __asm__ volatile("dmb ish":::"memory");
+        if(vm_->acquireImported())return poison();
+        acquired_fence_=covered;acquired_valid_=true;
+        native_adreno_acquire_stats[0]=native_adreno_acquire_stats[0]+1;
+    } else native_adreno_acquire_stats[1]=native_adreno_acquire_stats[1]+1;
     job={};return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoSubmit::detach()
