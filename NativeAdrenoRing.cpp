@@ -34,7 +34,6 @@ enum : uint32_t {
     RingWaitTimestamp = 0x14,
     RingCcuInvalidateDepth = 0x18,
     RingCcuInvalidateColor = 0x19,
-    RingCacheInvalidate = 0x31,   /* a6xx CACHE_INVALIDATE: UCHE and the texture caches */
     /* What the SQE's CP_SMMU_TABLE_UPDATE handler does before it switches tables (a740_sqe.fw, qrisc-disasm): CACHE_FLUSH7 (0x32)
      * and CACHE_INVALIDATE7 (0x33) with a wait for idle (CP_WAIT_FOR_IDLE 0x26). Linux gets these from that packet on every context
      * switch; this ring never sends it, and event 0x31 is only CACHE_CLEAN on A7XX, so nothing else ever invalidated UCHE. */
@@ -206,6 +205,8 @@ IOReturn NativeAdrenoRing::submit(const uint32_t *words,size_t word_count,uint32
 {
     return submitWords(words,word_count,fence,false);
 }
+/* Opt-in (the board's kcmd gpu set uche-inv): an a6xx CACHE_INVALIDATE (UCHE and the texture caches) before each framed submission. */
+extern "C" {volatile uint32_t native_adreno_uche_invalidate;}
 IOReturn NativeAdrenoRing::submitFramed(const uint32_t *words,size_t word_count,uint32_t *fence)
 {
     return submitWords(words,word_count,fence,true);
@@ -266,7 +267,6 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(reset)reset_pending_=false;
     return kIOReturnSuccess;
 }
-extern "C" {volatile uint32_t native_adreno_uche_invalidate;}
 NativeAdrenoRingFence NativeAdrenoRing::observeFence(uint32_t fence,
     const NativeAdrenoRingClock *clock,uint32_t timeout_us,uint32_t *observed)
 {
