@@ -207,6 +207,18 @@ IOReturn NativeAdrenoRing::submit(const uint32_t *words,size_t word_count,uint32
 }
 /* Opt-in (the board's kcmd gpu set uche-inv): an a6xx CACHE_INVALIDATE (UCHE and the texture caches) before each framed submission. */
 extern "C" {volatile uint32_t native_adreno_uche_invalidate;}
+/* Per-submission GPU timestamps (A6XX framed submissions; native_adreno_ring_ts, default on where the fence page has room): CP_REG_TO_MEM of
+ * CP_ALWAYS_ON_COUNTER when the CP reaches the submission, and an RB_DONE_TS event timestamp when its work has drained, into the fence page at
+ * +RingTsOffset, 16 bytes a slot, slot seqno&63. native_adreno_ring_ts_cpu[slot] is mach time at the WPTR write, and native_adreno_ring_clock
+ * a (mach, always-on) pair read together at that moment, so the host lines the GPU's times up with the CPU's (both count 19.2 MHz).
+ * native_adreno_ring_ts_base is the kernel address of the slots. */
+extern "C" {
+volatile uint32_t native_adreno_ring_ts=1;
+volatile uint64_t native_adreno_ring_ts_cpu[64],native_adreno_ring_clock[2];
+volatile uint64_t *native_adreno_ring_ts_base;
+uint64_t (*native_adreno_ring_now)(void);   /* the board's mach_absolute_time; null: no CPU times */
+}
+enum {RingTsOffset=2048,RingTsWords=4+5,RingAlwaysOnLo=0x980,RingRegToMem=0x3e,RingDoneTs=0x16};
 IOReturn NativeAdrenoRing::submitFramed(const uint32_t *words,size_t word_count,uint32_t *fence)
 {
     return submitWords(words,word_count,fence,true);
@@ -219,7 +231,9 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
     const bool reset=framed && reset_pending_ && !a6xx_;
     const bool uche=a6xx_ && framed && native_adreno_uche_invalidate;
-    const uint32_t extra=a6xx_?(framed?4u:0u)+(uche?2u:0u)+RingFenceWords:
+    const bool ts=a6xx_ && framed && native_adreno_ring_ts && fence_bytes_>=RingTsOffset+64*16;
+    const uint64_t ts_iova=fence_iova_+RingTsOffset+((seqno_+1)&63)*16;
+    const uint32_t extra=a6xx_?(framed?4u:0u)+(uche?2u:0u)+(ts?(uint32_t)RingTsWords:0u)+RingFenceWords:
         framed?RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords:RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
@@ -241,12 +255,27 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
             inv[1]=RingCacheInvalidate;
             ring_[at&mask]=inv[0];ring_[(at+1)&mask]=inv[1];at=(at+2)&mask;
         }
+        if(ts) {   /* CP_REG_TO_MEM CP_ALWAYS_ON_COUNTER, 64-bit (CNT 2, bit 30) -> slot +0 */
+            uint32_t r[4];
+            if(AdrenoPM4Type7(RingRegToMem,3,&r[0])!=AdrenoPM4Success)return poison();
+            r[1]=RingAlwaysOnLo|(2u<<18)|(1u<<30);r[2]=(uint32_t)ts_iova;r[3]=(uint32_t)(ts_iova>>32);
+            for(uint32_t i=0;i<4;++i)ring_[(at+i)&mask]=r[i];
+            at=(at+4)&mask;
+            native_adreno_ring_ts_base=reinterpret_cast<volatile uint64_t *>(reinterpret_cast<volatile uint8_t *>(fence_)+RingTsOffset);
+        }
     } else if(framed) {
         status=emitPrologue(at,reset,&at);
         if(status)return status;
     }
     for(size_t i=0;i<word_count;++i)ring_[(at+i)&mask]=words[i];
     at=(at+(uint32_t)word_count)&mask;
+    if(ts) {   /* CP_EVENT_WRITE RB_DONE_TS with TIMESTAMP (bit 30) -> slot +8, once the submission's work has drained */
+        uint32_t e[5];
+        if(AdrenoPM4Type7(RingFenceOpcode,4,&e[0])!=AdrenoPM4Success)return poison();
+        e[1]=RingDoneTs|(1u<<30);e[2]=(uint32_t)(ts_iova+8);e[3]=(uint32_t)((ts_iova+8)>>32);e[4]=0;
+        for(uint32_t i=0;i<5;++i)ring_[(at+i)&mask]=e[i];
+        at=(at+5)&mask;
+    }
     uint32_t end=0;
     status=framed && !a6xx_?emitFramedFence(at,seqno_+1,&end):emitFence(at,seqno_+1,&end);
     if(status)return status;
@@ -262,6 +291,12 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     }
     if(cache_.publish(cache_.cookie,ring_,ring_bytes_))return poison();
     if(io_.barrier(io_.cookie))return poison();
+    if(ts) {
+        uint32_t lo=0,hi=0,lo2=0;
+        io_.read32(io_.cookie,RingAlwaysOnLo+1,&hi);io_.read32(io_.cookie,RingAlwaysOnLo,&lo);io_.read32(io_.cookie,RingAlwaysOnLo+1,&lo2);
+        if(lo2==hi && native_adreno_ring_now) {native_adreno_ring_clock[0]=native_adreno_ring_now();native_adreno_ring_clock[1]=((uint64_t)hi<<32)|lo;}
+        if(native_adreno_ring_now)native_adreno_ring_ts_cpu[(seqno_+1)&63]=native_adreno_ring_now();
+    }
     if(io_.write32(io_.cookie,RingWptr,end))return poison();
     next_=end;*fence=++seqno_;++submissions_;
     if(reset)reset_pending_=false;

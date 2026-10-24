@@ -375,15 +375,25 @@ IOReturn NativeAdrenoVm::publishMapped()
     }
     return kIOReturnSuccess;
 }
+/* acquireImported: [0] calls, [1] imports maintained, [2] their bytes, [3] total us, [4] the longest call us, [5] imports skipped. */
+extern "C" {volatile uint64_t native_adreno_acquire_detail[6];}
 IOReturn NativeAdrenoVm::acquireImported()
 {
     if(!attached_ || poisoned_)return kIOReturnNotReady;
+    const uint64_t t0=native_adreno_vm_now_us?native_adreno_vm_now_us():0;
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory || !m.memory->imported() || !(m.permissions&ArmSmmu4KWrite))continue;
-        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;continue;}
+        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;native_adreno_acquire_detail[5]=native_adreno_acquire_detail[5]+1;continue;}
         if(m.memory->acquireDeviceWrites(0,m.memory->bytes()))return fail(ArmSmmu4KIoError);
+        native_adreno_acquire_detail[1]=native_adreno_acquire_detail[1]+1;native_adreno_acquire_detail[2]=native_adreno_acquire_detail[2]+m.memory->bytes();
     }
+    if(native_adreno_vm_now_us) {
+        const uint64_t us=native_adreno_vm_now_us()-t0;
+        native_adreno_acquire_detail[3]=native_adreno_acquire_detail[3]+us;
+        if(us>native_adreno_acquire_detail[4])native_adreno_acquire_detail[4]=us;
+    }
+    native_adreno_acquire_detail[0]=native_adreno_acquire_detail[0]+1;
     return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoVm::sampleWord(uint64_t iova,uint32_t *cached,uint32_t *dram) const

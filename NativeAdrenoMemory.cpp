@@ -324,10 +324,13 @@ IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
  * The acquire side keeps its maintenance: the kernel's physical aperture still maps those pages cacheable and may hold clean lines. */
 extern "C" {bool (*native_adreno_page_uncached)(uint64_t physical);volatile uint64_t native_adreno_uncached_skipped;}
 /* Opt-in (a board that knows no kernel path reads those pages through a cacheable alias): the acquire side skips the uncached pages too. */
-extern "C" {volatile uint32_t native_adreno_uncached_acquire_skip;}
+extern "C" {volatile uint32_t native_adreno_uncached_acquire_skip;volatile uint64_t native_adreno_uncached_memo;}
 IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op,bool publish)
 {
     bool (*const uncached)(uint64_t)=publish?native_adreno_page_uncached:nullptr;
+    if(uncached && all_uncached_) {native_adreno_uncached_memo=native_adreno_uncached_memo+1;return kIOReturnSuccess;}
+    const bool whole=offset==0 && bytes==bytes_;
+    bool every=uncached!=nullptr;
     for(size_t i=0;i<span_count_;++i) {
         const NativeAdrenoPhysicalSpan &span=spans_[i];
         const size_t begin=offset>span.offset?offset:span.offset;
@@ -342,7 +345,7 @@ IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeA
         /* Runs of pages that may be cached are maintained together; the uncached pages between them are skipped. */
         uint64_t run=first;
         for(uint64_t page=first;page<=last;page+=4096) {
-            if(page<last && !uncached(page))continue;
+            if(page<last && !uncached(page)) {every=false;continue;}
             if(page>run) {
                 const IOReturn status=NativeAdrenoMaintainPhysicalPages(run,(size_t)(page-run),op);
                 if(status)return status;
@@ -351,5 +354,6 @@ IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeA
             run=page+4096;
         }
     }
+    if(every && whole)all_uncached_=true;
     return kIOReturnSuccess;
 }

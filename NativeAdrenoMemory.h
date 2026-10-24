@@ -38,6 +38,9 @@ class NativeAdrenoMemory final {
     void *mapping_=nullptr;
     NativeAdrenoPhysicalSpan *spans_=nullptr;
     size_t bytes_=0,span_count_=0,span_capacity_=0;
+    /* Imports only: every page found uncached by the board hook over the whole import (the attribute is the creator's and fixed for the
+     * import's life), so later maintenance with the hook skips the per-page walk. */
+    bool all_uncached_=false;
     uint32_t device_references_=0;
     bool prepared_=false,quarantined_=false,write_combined_=false,pooled_=false;
     size_t pool_offset_=0;
