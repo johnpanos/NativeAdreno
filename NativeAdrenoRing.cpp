@@ -34,6 +34,7 @@ enum : uint32_t {
     RingWaitTimestamp = 0x14,
     RingCcuInvalidateDepth = 0x18,
     RingCcuInvalidateColor = 0x19,
+    RingCacheInvalidate = 0x31,   /* a6xx CACHE_INVALIDATE: UCHE and the texture caches */
     /* What the SQE's CP_SMMU_TABLE_UPDATE handler does before it switches tables (a740_sqe.fw, qrisc-disasm): CACHE_FLUSH7 (0x32)
      * and CACHE_INVALIDATE7 (0x33) with a wait for idle (CP_WAIT_FOR_IDLE 0x26). Linux gets these from that packet on every context
      * switch; this ring never sends it, and event 0x31 is only CACHE_CLEAN on A7XX, so nothing else ever invalidated UCHE. */
@@ -216,7 +217,8 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(!words || !word_count || word_count>SIZE_MAX/sizeof(uint32_t))return kIOReturnBadArgument;
     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
     const bool reset=framed && reset_pending_ && !a6xx_;
-    const uint32_t extra=a6xx_?(framed?4u:0u)+RingFenceWords:
+    const bool uche=a6xx_ && framed && native_adreno_uche_invalidate;
+    const uint32_t extra=a6xx_?(framed?4u:0u)+(uche?2u:0u)+RingFenceWords:
         framed?RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords:RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
@@ -232,6 +234,12 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
         pro[1]=RingCcuInvalidateDepth;pro[3]=RingCcuInvalidateColor;
         for(uint32_t i=0;i<4;++i)ring_[(at+i)&mask]=pro[i];
         at=(at+4)&mask;
+        if(uche) {   /* native_adreno_uche_invalidate: a UCHE/TP invalidate before each submission (CPU writes to a recycled texture) */
+            uint32_t inv[2];
+            if(AdrenoPM4Type7(RingFenceOpcode,1,&inv[0])!=AdrenoPM4Success)return poison();
+            inv[1]=RingCacheInvalidate;
+            ring_[at&mask]=inv[0];ring_[(at+1)&mask]=inv[1];at=(at+2)&mask;
+        }
     } else if(framed) {
         status=emitPrologue(at,reset,&at);
         if(status)return status;
@@ -258,6 +266,7 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(reset)reset_pending_=false;
     return kIOReturnSuccess;
 }
+extern "C" {volatile uint32_t native_adreno_uche_invalidate;}
 NativeAdrenoRingFence NativeAdrenoRing::observeFence(uint32_t fence,
     const NativeAdrenoRingClock *clock,uint32_t timeout_us,uint32_t *observed)
 {
