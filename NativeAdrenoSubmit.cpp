@@ -6,6 +6,8 @@
 /* Where a submission spends its time, in mach ticks: [0] submissions, [1] retire sweep, [2] write-combine re-assertion and audit,
  * [3] publishMapped, [4] TLB invalidation, [5] the rest (ring write), [6] total, [7] the longest total. */
 extern "C" {volatile uint64_t native_adreno_submit_time[8];}
+/* The last 64 submissions, slot (n-1)&63 for submission n: [0] start (mach ticks), [1] total, [2] publishMapped. */
+extern "C" {volatile uint64_t native_adreno_submit_ring[64][3];}
 
 /* CP_INDIRECT_BUFFER is opcode 0x3f with a 3-word payload: 64-bit GPU address
  * and IB_SIZE in dwords (bits 0..19), exactly as the pinned adreno_pm4.xml
@@ -206,6 +208,8 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
     *fence=value;
     {
         const uint64_t end=mach_absolute_time(),total=end-t0;
+        const uint64_t slot=native_adreno_submit_time[0]&63;
+        native_adreno_submit_ring[slot][0]=t0;native_adreno_submit_ring[slot][1]=total;native_adreno_submit_ring[slot][2]=t3-t2;
         native_adreno_submit_time[0]=native_adreno_submit_time[0]+1;
         native_adreno_submit_time[5]+=end-t3;native_adreno_submit_time[6]+=total;
         if(total>native_adreno_submit_time[7])native_adreno_submit_time[7]=total;
