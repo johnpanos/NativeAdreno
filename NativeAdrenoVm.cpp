@@ -11,7 +11,7 @@ extern "C" {int (*native_adreno_dram_read32)(uint64_t,uint32_t *);int (*native_a
  * attributes then needs no CPU cache maintenance. 0 keeps every mapping maintained as before. Counters: maintenance passes skipped for
  * coherent mappings at map, unmap, submission and completion. */
 extern "C" {volatile uint32_t native_adreno_io_coherent;volatile uint32_t native_adreno_coherent_skips[4];}
-extern "C" {volatile uint64_t native_adreno_publish_stats[4];}
+extern "C" {volatile uint64_t native_adreno_maint_stats[4];}
 static bool coherentMapping(unsigned writeback) {return writeback && native_adreno_io_coherent;}
 /* GPU-written imports (render targets) are mapped non-coherent (the GPU stopped inside its end-of-pass clean writing them through
  * write-back mappings), and the CPU never touches their pixels while the GPU owns them: they were cleaned when mapped and need no
@@ -345,7 +345,7 @@ IOReturn NativeAdrenoVm::publishMapped()
         if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         /* Per-submission maintenance, by kind (the board's kcmd gpu): [0] imported bytes, [1] owned bytes, [2] imported, [3] owned objects. */
         const bool imported=m.memory->imported();
-        native_adreno_publish_stats[imported?0:1]+=m.memory->bytes();native_adreno_publish_stats[imported?2:3]+=1;
+        native_adreno_maint_stats[imported?0:1]+=m.memory->bytes();native_adreno_maint_stats[imported?2:3]+=1;
         if(m.memory->publishForDevice(0,m.memory->bytes(),true,distrust_write_combined_))return fail(ArmSmmu4KIoError);
     }
     return kIOReturnSuccess;
