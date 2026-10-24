@@ -2,7 +2,9 @@
 /* Deliberately small authored host doubles, not original XNU headers or ABI. */
 #ifndef NATIVE_ADRENO_XNU_MEMORY_FIXTURE_H
 #define NATIVE_ADRENO_XNU_MEMORY_FIXTURE_H
+#include <cstdarg>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,9 +17,19 @@ using addr64_t=uint64_t;
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnBusy=2,
  kIOReturnNoResources=3,kIOReturnNoMemory=4,kIOReturnUnsupported=5,
  kIOReturnNotReady=6,kIOReturnIOError=7,kIOReturnTimeout=8;
-constexpr unsigned kIODirectionOut=2,kIODirectionInOut=3,kIOMemoryMapperNone=0x800,kIOMemoryPhysicallyContiguous=0x10;
+using IODirection=unsigned;
+constexpr unsigned kIODirectionOut=2,kIODirectionInOut=3,kIOMemoryMapperNone=0x800,kIOMemoryPhysicallyContiguous=0x10,
+ kIOMemoryPersistent=0x100;
 inline void *kernel_task=reinterpret_cast<void *>(1);
 using task_t=void *;
+/* The pmap queries of the per-submission import check (NativeAdrenoMemory::staleImport): a task's pmap is the task itself, the calling
+ * task is none (so the check reports "not checkable"), and no page is resident. */
+using pmap_t=void *;
+using ppnum_t=unsigned;
+inline task_t current_task() {return nullptr;}
+inline void IOLog(const char *format,...) {va_list a;va_start(a,format);std::vfprintf(stderr,format,a);va_end(a);}
+extern "C" inline pmap_t get_task_pmap(task_t task) {return task;}
+extern "C" inline ppnum_t pmap_find_phys(pmap_t,addr64_t) {return 0;}
 /* ScatterUnlessContiguous: what the tablet does, one physical page per span unless the caller asked for contiguous memory. */
 enum SegmentMode {Contiguous,Scattered,ZeroPhysical,UnalignedPhysical,ShortSegment,HighPhysical,Paired,ScatterUnlessContiguous};
 class IOBufferMemoryDescriptor;
