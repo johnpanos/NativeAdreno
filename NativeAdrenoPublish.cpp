@@ -460,6 +460,11 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
     static int trace=-1;
     if(trace<0) {int value=0;trace=PE_parse_boot_argn("ngpu-trace",&value,sizeof(value)) && value?value:0;}
     if(!trace)return runInner(method,input,input_size,output,output_size);
+    if(trace>1 && method!=NativeAdrenoMethodWaitFence)printf("ngpu: %s > m%u in%zu out%zu\n",name_,method,input_size,output_size);
+    if(method==NativeAdrenoMethodBoImport && input && input_size==sizeof(NativeAdrenoAbiBoImport)) {
+        const NativeAdrenoAbiBoImport *b=static_cast<const NativeAdrenoAbiBoImport *>(input);
+        printf("ngpu: %s import %llx+%llx\n",name_,(unsigned long long)b->address,(unsigned long long)b->bytes);
+    }
     if(method==NativeAdrenoMethodSubmit && input && input_size==sizeof(NativeAdrenoAbiSubmit)) {
         const NativeAdrenoAbiSubmit *s=static_cast<const NativeAdrenoAbiSubmit *>(input);
         printf("ngpu: %s submit n%u q%llu wait%llu", name_, s->buffer_count, (unsigned long long)s->queue, (unsigned long long)s->wait_fence);
@@ -470,7 +475,8 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
         const NativeAdrenoAbiBoMap *m=static_cast<const NativeAdrenoAbiBoMap *>(input);
         printf("ngpu: %s map h%llx iova %llx perm%u wb%u\n",name_,(unsigned long long)m->handle,(unsigned long long)m->iova,m->permissions,m->writeback);
     } else if(method==NativeAdrenoMethodBoAlloc && input && input_size==sizeof(NativeAdrenoAbiBoAlloc)) {
-        printf("ngpu: %s alloc %llx\n",name_,(unsigned long long)static_cast<const NativeAdrenoAbiBoAlloc *>(input)->bytes);
+        const NativeAdrenoAbiBoAlloc *b=static_cast<const NativeAdrenoAbiBoAlloc *>(input);
+        printf("ngpu: %s alloc %llx align%u contig%u\n",name_,(unsigned long long)b->bytes,b->align_log2,b->contiguous);
     }
     const IOReturn result=runInner(method,input,input_size,output,output_size);
     if(method==NativeAdrenoMethodSubmit && !result && output && output_size>=8)
