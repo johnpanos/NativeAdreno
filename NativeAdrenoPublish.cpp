@@ -223,12 +223,18 @@ static NativeAdrenoClientRecord *clientRecord(const char *name)
     }
     return nullptr;
 }
+static volatile uint32_t gSlot0Closing;   /* deferred closes of a slot-0 connection in flight */
 bool AGXDeviceUserClient::mount(bool kernel)
 {
     proc_selfname(name_,sizeof name_);
     NativeAdrenoUserClient *core=new NativeAdrenoUserClient;
     if(!core)return false;
     IOLockLock(g.lock);
+    /* A restarted render server reconnects while its predecessor's connection is still in its deferred close (objects released after
+     * ~3 s): it would take a small client window and run out of GPU addresses (fajita session-233922: OutOfMemory(Device) for a
+     * 1326x1326 texture, a black screen). While slot 0's holder is in a deferred close, wait up to 10 s for it. */
+    if(!kernel && !strncmp(name_,"backboardd",sizeof name_))
+        for(unsigned i=0;i<100 && g.slots[0] && gSlot0Closing;++i) {IOLockUnlock(g.lock);IOSleep(100);IOLockLock(g.lock);}
     bool ok=false;
     /* The render server takes slot 0 (the large window) when free; every other process, or a second render-server connection, the next free one. */
     unsigned slot=NativeAdrenoMaxClients;
@@ -300,6 +306,7 @@ void AGXDeviceUserClient::deferredClose(thread_call_param_t self,thread_call_par
 {
     AGXDeviceUserClient *client=static_cast<AGXDeviceUserClient *>(self);
     const IOReturn status=client->finishClose();
+    if(!client->kernel_ && client->slot_==0)__atomic_fetch_sub(&gSlot0Closing,1u,__ATOMIC_RELEASE);
     printf("ngpu: %s deferred close -> %x\n",client->name_,status);
     client->release();
     thread_call_free(static_cast<thread_call_t>(call));
@@ -311,6 +318,7 @@ IOReturn AGXDeviceUserClient::clientClose()
         thread_call_t call=thread_call_allocate_with_options(&deferredClose,this,THREAD_CALL_PRIORITY_KERNEL,0);
         if(call) {
             retain();
+            if(!kernel_ && slot_==0)__atomic_fetch_add(&gSlot0Closing,1u,__ATOMIC_RELEASE);
             uint64_t deadline=0;
             clock_interval_to_deadline(3,kSecondScale,&deadline);
             thread_call_enter1_delayed(call,call,deadline);
