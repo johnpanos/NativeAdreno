@@ -41,6 +41,8 @@ class NativeAdrenoMemory final {
     uint32_t device_references_=0;
     bool prepared_=false,quarantined_=false,write_combined_=false,pooled_=false;
     size_t pool_offset_=0;
+    void *import_pmap_=nullptr;     /* the importing task's pmap and address, for staleImport() */
+    uint64_t import_address_=0;
     IOReturn maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation,bool publish=false);
 public:
     NativeAdrenoMemory()=default;
@@ -71,6 +73,10 @@ public:
      * publishForDevice/acquireDeviceWrites have nothing to do for this object. Spans and PA bounds are checked as for allocate. */
     IOReturn importTask(void *task,uint64_t address,size_t bytes,unsigned output_bits,size_t byte_budget);
     bool imported() const {return imported_!=nullptr;}
+    /* Diagnostics: for an import of the calling task, 0 when its first page is still the owner's page at that address, 1 when the
+     * address is unmapped now, 2 when another page lies there (the owner freed and reallocated the range: the import holds the old
+     * pages), 3 when not checkable (not an import, or another task's). *now gets the page found. */
+    int staleImport(uint64_t *now) const;
     /* An import of memory the owner maps read-only (the kernel could pin it for reading only): the GPU may read it, never write it. */
     bool readOnly() const {return read_only_;}
     /* After allocate(), before any device or client mapping: cleans and invalidates the pages and makes every CPU mapping of them

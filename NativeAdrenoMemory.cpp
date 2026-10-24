@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "NativeAdrenoMemory.h"
+#include <kern/task.h>
+extern "C" {pmap_t get_task_pmap(task_t);ppnum_t pmap_find_phys(pmap_t,addr64_t);}
 /* Where a call that never returns is stuck: the free/unmap/release path stores a stage number here, the board page shows it. */
 extern "C" {volatile uint32_t native_adreno_trace_stage;}
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -220,10 +222,20 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         else spans_[span_count_++]={offset,physical,4096};
     }
     native_adreno_import_stage=19;
+    import_pmap_=get_task_pmap(static_cast<task_t>(task));import_address_=address;
     native_adreno_pool_stats[7]=native_adreno_pool_stats[7]+(uint32_t)span_count_;
     return kIOReturnSuccess;
 failed:
     (void)release();return status;
+}
+int NativeAdrenoMemory::staleImport(uint64_t *now) const
+{
+    if(now)*now=0;
+    if(!imported_ || !span_count_ || !import_pmap_ || import_pmap_!=get_task_pmap(current_task()))return 3;
+    const ppnum_t page=pmap_find_phys(static_cast<pmap_t>(import_pmap_),import_address_);
+    if(now)*now=static_cast<uint64_t>(page)<<12;
+    if(!page)return 1;
+    return (static_cast<uint64_t>(page)<<12)==spans_[0].physical?0:2;
 }
 IOReturn NativeAdrenoMemory::makeWriteCombined()
 {

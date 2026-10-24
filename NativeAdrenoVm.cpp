@@ -348,12 +348,24 @@ IOReturn NativeAdrenoVm::invalidateTlb()
         ArmSmmu4KInvalidateAllOwnedContext(&io_,streams_->bank,context_,budget_,&r);
     return status?fail(status):kIOReturnSuccess;
 }
+/* Imports of the submitting task checked per submission: [0] checked, [1] address unmapped now, [2] another page there now (stale). */
+extern "C" {volatile uint64_t native_adreno_import_check[3];}
 IOReturn NativeAdrenoVm::publishMapped()
 {
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory)continue;
+        if(m.memory->imported()) {
+            uint64_t now=0;
+            const int stale=m.memory->staleImport(&now);
+            if(stale<3)native_adreno_import_check[0]=native_adreno_import_check[0]+1;
+            if(stale==1||stale==2) {
+                const uint64_t n=native_adreno_import_check[stale];
+                native_adreno_import_check[stale]=n+1;
+                if(n<8)IOLog("ngpu: import at iova %llx %s (page now %llx)\n",(unsigned long long)m.iova,stale==1?"unmapped":"REPLACED",(unsigned long long)now);
+            }
+        }
         if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions) ||
            readOnlyImportSkipped(m.memory,m.permissions) || writtenPublishSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         /* Per-submission maintenance, by kind (the board's kcmd gpu): [0] imported bytes, [1] owned bytes, [2] imported, [3] owned objects. */
