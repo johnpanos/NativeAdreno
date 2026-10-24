@@ -165,6 +165,7 @@ class AGXDeviceUserClient : public IOUserClient {
     void dropViews(uint32_t token);
     static IOReturn action(OSObject *target,void *reference,IOExternalMethodArguments *arguments);
     IOReturn run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
+    IOReturn runInner(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
 public:
     void setHandoffOnly() {handoffOnly_=true;}
     bool mount(bool kernel);
@@ -452,7 +453,33 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     native_adreno_metal_diag.last_status=uint32_t(status);
     return status;
 }
+/* Boot arg ngpu-trace=1: every ABI call of every client in the kernel log (method, the submit's buffers, the result), so a run that
+ * resets the SoC still leaves the last calls in the streamed USB log. */
 IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size)
+{
+    static int trace=-1;
+    if(trace<0) {int value=0;trace=PE_parse_boot_argn("ngpu-trace",&value,sizeof(value)) && value?value:0;}
+    if(!trace)return runInner(method,input,input_size,output,output_size);
+    if(method==NativeAdrenoMethodSubmit && input && input_size==sizeof(NativeAdrenoAbiSubmit)) {
+        const NativeAdrenoAbiSubmit *s=static_cast<const NativeAdrenoAbiSubmit *>(input);
+        printf("ngpu: %s submit n%u q%llu wait%llu", name_, s->buffer_count, (unsigned long long)s->queue, (unsigned long long)s->wait_fence);
+        for(uint32_t i=0;i<s->buffer_count && i<NativeAdrenoAbiMaxBuffers;++i)
+            printf(" [%llx+%llx]",(unsigned long long)s->buffers[i].iova,(unsigned long long)s->buffers[i].bytes);
+        printf("\n");
+    } else if(method==NativeAdrenoMethodBoMap && input && input_size==sizeof(NativeAdrenoAbiBoMap)) {
+        const NativeAdrenoAbiBoMap *m=static_cast<const NativeAdrenoAbiBoMap *>(input);
+        printf("ngpu: %s map h%llx iova %llx perm%u wb%u\n",name_,(unsigned long long)m->handle,(unsigned long long)m->iova,m->permissions,m->writeback);
+    } else if(method==NativeAdrenoMethodBoAlloc && input && input_size==sizeof(NativeAdrenoAbiBoAlloc)) {
+        printf("ngpu: %s alloc %llx\n",name_,(unsigned long long)static_cast<const NativeAdrenoAbiBoAlloc *>(input)->bytes);
+    }
+    const IOReturn result=runInner(method,input,input_size,output,output_size);
+    if(method==NativeAdrenoMethodSubmit && !result && output && output_size>=8)
+        printf("ngpu: %s fence %llu\n",name_,(unsigned long long)*static_cast<const uint64_t *>(output));
+    else if(method!=NativeAdrenoMethodWaitFence || result!=kIOReturnTimeout)
+        if(result || trace>1)printf("ngpu: %s m%u -> %x\n",name_,method,result);
+    return result;
+}
+IOReturn AGXDeviceUserClient::runInner(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size)
 {
     if(method>=NativeAdrenoHandoffBase && method<=NativeAdrenoHandoffLast)
         return native_gop_handoff_call(method-NativeAdrenoHandoffBase,current_task(),input,input_size,output,output_size);
