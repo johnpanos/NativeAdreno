@@ -35,6 +35,7 @@ class NativeAdrenoSubmit final {
         size_t count=0;
         uint64_t handles[16]{};
         uint32_t queue=0;
+        uint64_t serial=0;   /* 1-based submission number (native_adreno_submit_ring slot serial-1) */
         bool active=false;
     } jobs_[8];
     NativeAdrenoVm *vm_=nullptr;

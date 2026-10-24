@@ -6,8 +6,9 @@
 /* Where a submission spends its time, in mach ticks: [0] submissions, [1] retire sweep, [2] write-combine re-assertion and audit,
  * [3] publishMapped, [4] TLB invalidation, [5] the rest (ring write), [6] total, [7] the longest total. */
 extern "C" {volatile uint64_t native_adreno_submit_time[8];}
-/* The last 64 submissions, slot (n-1)&63 for submission n: [0] start (mach ticks), [1] total, [2] publishMapped. */
-extern "C" {volatile uint64_t native_adreno_submit_ring[64][3];}
+/* The last 64 submissions, slot (n-1)&63 for submission n: [0] start (mach ticks), [1] total, [2] publishMapped, [3] submit end to the
+ * release that first saw the job complete (0 while outstanding), [4] that release's acquireImported. */
+extern "C" {volatile uint64_t native_adreno_submit_ring[64][5];}
 /* Job releases: [0] that ran acquireImported, [1] that an earlier acquire already covered. */
 extern "C" {volatile uint64_t native_adreno_acquire_stats[2];}
 
@@ -58,13 +59,19 @@ IOReturn NativeAdrenoSubmit::release(Job &job)
         if(retired)status=retired;else ++stats_.references_retired;
     }
     if(status)return poison();
+    if(job.serial) {
+        volatile uint64_t *e=native_adreno_submit_ring[(job.serial-1)&63];
+        if(!e[3])e[3]=mach_absolute_time()-(e[0]+e[1]);
+    }
     /* One acquire covers every job that had completed when it began: a job whose fence an earlier acquire already covers (several jobs
      * retired in one sweep, or a client's wait after the sweep) needs none of its own. */
     if(!acquired_valid_ || (int32_t)(job.fence-acquired_fence_)>0) {
         uint32_t covered=ring_->completedFence();
         if((int32_t)(covered-job.fence)<0)covered=job.fence;
         __asm__ volatile("dmb ish":::"memory");
+        const uint64_t a0=mach_absolute_time();
         if(vm_->acquireImported())return poison();
+        if(job.serial) {volatile uint64_t *e=native_adreno_submit_ring[(job.serial-1)&63];if(!e[4])e[4]=mach_absolute_time()-a0;}
         acquired_fence_=covered;acquired_valid_=true;
         native_adreno_acquire_stats[0]=native_adreno_acquire_stats[0]+1;
     } else native_adreno_acquire_stats[1]=native_adreno_acquire_stats[1]+1;
@@ -221,6 +228,8 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
         const uint64_t end=mach_absolute_time(),total=end-t0;
         const uint64_t slot=native_adreno_submit_time[0]&63;
         native_adreno_submit_ring[slot][0]=t0;native_adreno_submit_ring[slot][1]=total;native_adreno_submit_ring[slot][2]=t3-t2;
+        native_adreno_submit_ring[slot][3]=native_adreno_submit_ring[slot][4]=0;
+        job->serial=native_adreno_submit_time[0]+1;
         native_adreno_submit_time[0]=native_adreno_submit_time[0]+1;
         native_adreno_submit_time[5]+=end-t3;native_adreno_submit_time[6]+=total;
         if(total>native_adreno_submit_time[7])native_adreno_submit_time[7]=total;
