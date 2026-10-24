@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 #include <atomic>
 #include <mutex>
@@ -67,6 +68,14 @@ int timeread(void *,uint32_t address,uint32_t *value) {
 }
 const NativeAdrenoAbiDeviceInfo info={0x43050a01u,3u<<20,0x1000000ull,0x1fffffffff000ull,0x20000000ull,0x60000000ull,
     16,6,1,4,NativeAdrenoDeviceClientIova,0};
+/* HOSTSIM_GPU=a630: the facts fajita's A630 kernel reports (Linux v6.16 a6xx_calc_ubwc_config defaults, MSM_PARAM_GMEM_BASE 1 MiB,
+ * a6xx uche_trap_base, SDM845 UBWC 2.0), so Turnip comes up as an a6xx gen1 device over the same kernel stack. */
+const NativeAdrenoAbiDeviceInfo infoA630={0x06030002u,1u<<20,0x100000ull,0x1fffffffff000ull,0x20000000ull,0x60000000ull,
+    15,6,0,2,NativeAdrenoDeviceClientIova,0};
+const NativeAdrenoAbiDeviceInfo *selectedInfo() {
+    const char *gpu=std::getenv("HOSTSIM_GPU");
+    return gpu && !std::strcmp(gpu,"a630")?&infoA630:&info;
+}
 const NativeAdrenoRingIo ringio{nullptr,cwrite,cread,cbarrier};
 const NativeAdrenoRingCache ringcache{nullptr,cpublish,cacquire};
 const NativeAdrenoRingClock clock_{nullptr,cnow,cidle};
@@ -119,7 +128,7 @@ int host_gpu_open() {
     if(st) {std::fprintf(stderr,"host gpu: client open failed %d\n",st);return kIOReturnNotReady;}
     std::setvbuf(stderr,nullptr,_IONBF,0);
     client.attachTimer(&timer);
-    client.attachDeviceInfo(&info);
+    client.attachDeviceInfo(selectedInfo());
     opened=true;
     return kIOReturnSuccess;
 }
