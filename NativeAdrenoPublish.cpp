@@ -493,6 +493,10 @@ IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input
     static int trace=-1;
     if(trace<0) {int value=0;trace=PE_parse_boot_argn("ngpu-trace",&value,sizeof(value)) && value?value:0;}
     if(!trace)return runInner(method,input,input_size,output,output_size);
+    if(method==NativeAdrenoMethodSetMetadata && input && input_size==sizeof(NativeAdrenoAbiMetadata)) {
+        const NativeAdrenoAbiMetadata *meta=static_cast<const NativeAdrenoAbiMetadata *>(input);
+        printf("ngpu: %s text '%.*s'\n",name_,(int)(meta->bytes<NativeAdrenoAbiMetadataBytes?meta->bytes:NativeAdrenoAbiMetadataBytes),meta->text);
+    }
     if(trace>1 && method!=NativeAdrenoMethodWaitFence)printf("ngpu: %s > m%u in%zu out%zu\n",name_,method,input_size,output_size);
     if(method==NativeAdrenoMethodBoImport && input && input_size==sizeof(NativeAdrenoAbiBoImport)) {
         const NativeAdrenoAbiBoImport *b=static_cast<const NativeAdrenoAbiBoImport *>(input);
@@ -638,6 +642,11 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
      * that a sandbox that admits neither selectors nor mapping, or a crash, still leaves a trace of how far it got. */
     if((type>>16)==NativeAdrenoPluginOpenType && (type&0xffff)) {
         const uint32_t value=type&0xffff,slot=native_adreno_metal_diag.marks_total&15;
+        {   /* ngpu-trace: the plugin's progress markers in the log (not its telemetry text pairs, 0x8000..0xbfff, nor row starts) */
+            static int trace=-1;
+            if(trace<0) {int v=0;trace=PE_parse_boot_argn("ngpu-trace",&v,sizeof(v)) && v?v:0;}
+            if(trace && (value<0x8000 || value>=0xd000)) {char who[20]={};proc_selfname(who,sizeof who);printf("ngpu: %s mark %x\n",who,value);}
+        }
         /* Text stream into report2, one character per marker: 0x7fff starts a line, 0x70cc appends character cc. It needs no connection,
          * so the plugin's Turnip watchdog can report while Turnip itself holds its connection slot. Not counted as markers. */
         if(value>=0x8000) {
