@@ -488,10 +488,16 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
 }
 /* Boot arg ngpu-trace=1: every ABI call of every client in the kernel log (method, the submit's buffers, the result), so a run that
  * resets the SoC still leaves the last calls in the streamed USB log. */
+/* The trace level: -1 until the boot arg is read; a board may change it at run time (fajita: kcmd gpu set trace N). */
+extern "C" {volatile int native_adreno_trace=-1;}
+static int traceLevel()
+{
+    if(native_adreno_trace<0) {int value=0;native_adreno_trace=PE_parse_boot_argn("ngpu-trace",&value,sizeof(value)) && value?value:0;}
+    return native_adreno_trace;
+}
 IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size)
 {
-    static int trace=-1;
-    if(trace<0) {int value=0;trace=PE_parse_boot_argn("ngpu-trace",&value,sizeof(value)) && value?value:0;}
+    const int trace=traceLevel();
     if(!trace)return runInner(method,input,input_size,output,output_size);
     if(method==NativeAdrenoMethodSetMetadata && input && input_size==sizeof(NativeAdrenoAbiMetadata)) {
         const NativeAdrenoAbiMetadata *meta=static_cast<const NativeAdrenoAbiMetadata *>(input);
@@ -643,9 +649,7 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
     if((type>>16)==NativeAdrenoPluginOpenType && (type&0xffff)) {
         const uint32_t value=type&0xffff,slot=native_adreno_metal_diag.marks_total&15;
         {   /* ngpu-trace: the plugin's progress markers in the log (not its telemetry text pairs, 0x8000..0xbfff, nor row starts) */
-            static int trace=-1;
-            if(trace<0) {int v=0;trace=PE_parse_boot_argn("ngpu-trace",&v,sizeof(v)) && v?v:0;}
-            if(trace && (value<0x8000 || value>=0xd000)) {char who[20]={};proc_selfname(who,sizeof who);printf("ngpu: %s mark %x\n",who,value);}
+            if(traceLevel() && (value<0x8000 || value>=0xd000)) {char who[20]={};proc_selfname(who,sizeof who);printf("ngpu: %s mark %x\n",who,value);}
         }
         /* Text stream into report2, one character per marker: 0x7fff starts a line, 0x70cc appends character cc. It needs no connection,
          * so the plugin's Turnip watchdog can report while Turnip itself holds its connection slot. Not counted as markers. */
