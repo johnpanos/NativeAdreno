@@ -18,6 +18,8 @@
 #include <IOKit/IOUserClient.h>
 #include <string.h>
 #include <kern/thread.h>
+#include <kern/thread_call.h>
+#include <kern/clock.h>
 #include "NativeAdrenoUserClient.h"
 
 extern "C" void proc_selfname(char *, int);
@@ -162,7 +164,9 @@ class AGXDeviceUserClient : public IOUserClient {
      * pmap_assert_free. A cache of 64 held until the render server's hundreds of mapped BOs (int-087). */
     enum {MaxViews=1024};
     View *views_=nullptr;   /* on the heap: 1024 entries would make the client object too big for the kernel allocator's fixed-size classes */
-    void dropViews(uint32_t token);
+    unsigned dropViews(uint32_t token);
+    IOReturn finishClose();
+    static void deferredClose(thread_call_param_t self,thread_call_param_t call);
     static IOReturn action(OSObject *target,void *reference,IOExternalMethodArguments *arguments);
     IOReturn run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
     IOReturn runInner(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size);
@@ -273,22 +277,51 @@ bool AGXDeviceUserClient::mount(bool kernel)
 }
 /* Removes the cached view(s) of token (0 = all) and tears down every user mapping of them, so the BO's pages are never freed while a user
  * PTE still points at them, whether or not the client unmapped. */
-void AGXDeviceUserClient::dropViews(uint32_t token)
+unsigned AGXDeviceUserClient::dropViews(uint32_t token)
 {
+    unsigned forced=0;
     for(;;) {
         IOMemoryDescriptor *view=nullptr;
         IOLockLock(g.lock);
         if(views_)for(size_t i=0;i<MaxViews;++i) {View &v=views_[i];if(v.descriptor && (!token || v.token==token)) {view=v.descriptor;v.descriptor=nullptr;v.token=0;break;}}
         IOLockUnlock(g.lock);
-        if(!view)return;
+        if(!view)return forced;
         /* The returned reference is the last one outside the descriptor's own list: dropping it frees the map, which unmaps the user range. */
-        while(removeMappingForDescriptor(view))native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;
+        while(removeMappingForDescriptor(view)) {native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;++forced;}
         view->release();
     }
 }
+/* A client that dies with BOs still CPU-mapped (killed, or crashed in the middle of its work) closes from the task's IPC teardown,
+ * before its address space is gone: the maps of a dying task are already detached from its VM map (IOMemoryMap::taskDied), so
+ * releasing them does not unmap, and freeing the BOs then hands pages that are still in the task's pmap back to the VM
+ * (pmap_assert_free, fajita session-195220). Such a close releases the client's objects a few seconds later, once the task's VM map
+ * has been torn down; a client that unmapped its BOs itself (every orderly exit) closes at once, as before. */
+void AGXDeviceUserClient::deferredClose(thread_call_param_t self,thread_call_param_t call)
+{
+    AGXDeviceUserClient *client=static_cast<AGXDeviceUserClient *>(self);
+    const IOReturn status=client->finishClose();
+    printf("ngpu: %s deferred close -> %x\n",client->name_,status);
+    client->release();
+    thread_call_free(static_cast<thread_call_t>(call));
+}
 IOReturn AGXDeviceUserClient::clientClose()
 {
-    dropViews(0);
+    const unsigned forced=dropViews(0);
+    if(forced) {
+        thread_call_t call=thread_call_allocate_with_options(&deferredClose,this,THREAD_CALL_PRIORITY_KERNEL,0);
+        if(call) {
+            retain();
+            uint64_t deadline=0;
+            clock_interval_to_deadline(3,kSecondScale,&deadline);
+            thread_call_enter1_delayed(call,call,deadline);
+            printf("ngpu: %s closed with %u live CPU mappings: objects released in 3 s\n",name_,forced);
+            return kIOReturnSuccess;
+        }
+    }
+    return finishClose();
+}
+IOReturn AGXDeviceUserClient::finishClose()
+{
     IOLockLock(g.lock);
     IOReturn status=kIOReturnSuccess;
     AGXDeviceUserClient *mailbox=nullptr;
