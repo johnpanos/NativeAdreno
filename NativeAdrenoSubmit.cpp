@@ -2,6 +2,10 @@
 #include "NativeAdrenoSubmit.h"
 #include "AdrenoPM4.h"
 #include <IOKit/IOLib.h>
+#include <mach/mach_time.h>
+/* Where a submission spends its time, in mach ticks: [0] submissions, [1] retire sweep, [2] write-combine re-assertion and audit,
+ * [3] publishMapped, [4] TLB invalidation, [5] the rest (ring write), [6] total, [7] the longest total. */
+extern "C" {volatile uint64_t native_adreno_submit_time[8];}
 
 /* CP_INDIRECT_BUFFER is opcode 0x3f with a 3-word payload: 64-bit GPU address
  * and IB_SIZE in dwords (bits 0..19), exactly as the pinned adreno_pm4.xml
@@ -101,7 +105,9 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
         for(size_t j=0;j<handle_count;++j)if(handles[j]==buffer.handle) {known=true;break;}
         if(!known)handles[handle_count++]=buffer.handle;
     }
+    const uint64_t t0=mach_absolute_time();
     IOReturn swept=retireCompleted();
+    const uint64_t t1=mach_absolute_time();native_adreno_submit_time[1]+=t1-t0;
     if(swept)return swept;
     Job *job=free();
     if(!job)return kIOReturnBusy;
@@ -151,8 +157,10 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
             native_adreno_wc_distrusted=native_adreno_coherence[0]+1;
         }
     }
+    const uint64_t t2=mach_absolute_time();native_adreno_submit_time[2]+=t2-t1;
     (void)vm_->sampleWord(buffers[0].iova,&cached,&before);
     IOReturn status=vm_->publishMapped();
+    const uint64_t t3=mach_absolute_time();native_adreno_submit_time[3]+=t3-t2;
     if(!status) {
         (void)vm_->sampleWord(buffers[0].iova,&ignored,&after);
         native_adreno_coherence[0]=native_adreno_coherence[0]+1;
@@ -164,6 +172,7 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
             native_adreno_coherence[4]=native_adreno_coherence[4]+1;
         }
         status=vm_->invalidateTlb();
+        native_adreno_submit_time[4]+=mach_absolute_time()-t3;
     }
     if(status) {
         for(size_t i=0;i<handle_count;++i) {vm_->retireJobAfterCompletion(handles[i]);++stats_.references_retired;}
@@ -195,6 +204,12 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
     ++stats_.submissions;
     if(outstanding()>stats_.peak_jobs)stats_.peak_jobs=outstanding();
     *fence=value;
+    {
+        const uint64_t end=mach_absolute_time(),total=end-t0;
+        native_adreno_submit_time[0]=native_adreno_submit_time[0]+1;
+        native_adreno_submit_time[5]+=end-t3;native_adreno_submit_time[6]+=total;
+        if(total>native_adreno_submit_time[7])native_adreno_submit_time[7]=total;
+    }
     return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoSubmit::observeFence(uint32_t fence,const NativeAdrenoRingClock *clock,
