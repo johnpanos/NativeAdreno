@@ -41,7 +41,7 @@ class NativeAdrenoMemory final {
     uint32_t device_references_=0;
     bool prepared_=false,quarantined_=false,write_combined_=false,pooled_=false;
     size_t pool_offset_=0;
-    IOReturn maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation);
+    IOReturn maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation,bool publish=false);
 public:
     NativeAdrenoMemory()=default;
     ~NativeAdrenoMemory()=default;

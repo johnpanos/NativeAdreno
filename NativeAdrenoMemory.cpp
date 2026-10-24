@@ -288,7 +288,7 @@ IOReturn NativeAdrenoMemory::publishForDevice(size_t offset,size_t bytes,bool wr
 {
     if(!backed() || !prepared_ || quarantined_)return kIOReturnNotReady;
     if(!bytes || ((offset|bytes)&4095) || offset>bytes_ || bytes>bytes_-offset)return kIOReturnBadArgument;
-    if(imported_)return maintainImported(offset,bytes,writes?NativeAdrenoCleanInvalidate:NativeAdrenoClean);
+    if(imported_)return maintainImported(offset,bytes,writes?NativeAdrenoCleanInvalidate:NativeAdrenoClean,true);
     if(write_combined_)   /* no CPU mapping should cache these pages; if one does, reach its lines through the physical pages */
         return include_write_combined?maintainImported(offset,bytes,writes?NativeAdrenoCleanInvalidate:NativeAdrenoClean):kIOReturnSuccess;
     return NativeAdrenoMaintainOwnedPages(static_cast<unsigned char *>(mapping_)+offset,bytes,
@@ -305,15 +305,36 @@ IOReturn NativeAdrenoMemory::acquireDeviceWrites(size_t offset,size_t bytes)
 }
 /* Imported pages have no kernel mapping here (and write-combined ones only a non-cacheable one); maintain each span's part of
  * [offset, offset+bytes) by physical address. */
-IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op)
+/* Board hook: true for a physical page every CPU mapping reaches uncached (its pmap attribute is write-combined or device). Before the GPU
+ * reads such a page no CPU cache line of it can be dirty, so publishing skips it (CoreAnimation's surfaces are write-combined; int-?: 29 MiB
+ * of them were cleaned and invalidated on every submission while the desktop scrolled). Null (host, other boards): every page is maintained.
+ * The acquire side keeps its maintenance: the kernel's physical aperture still maps those pages cacheable and may hold clean lines. */
+extern "C" {bool (*native_adreno_page_uncached)(uint64_t physical);volatile uint64_t native_adreno_uncached_skipped;}
+IOReturn NativeAdrenoMemory::maintainImported(size_t offset,size_t bytes,NativeAdrenoCacheOperation op,bool publish)
 {
+    bool (*const uncached)(uint64_t)=publish?native_adreno_page_uncached:nullptr;
     for(size_t i=0;i<span_count_;++i) {
         const NativeAdrenoPhysicalSpan &span=spans_[i];
         const size_t begin=offset>span.offset?offset:span.offset;
         const size_t end=offset+bytes<span.offset+span.bytes?offset+bytes:span.offset+span.bytes;
         if(begin>=end)continue;
-        const IOReturn status=NativeAdrenoMaintainPhysicalPages(span.physical+(begin-span.offset),end-begin,op);
-        if(status)return status;
+        const uint64_t first=span.physical+(begin-span.offset),last=first+(end-begin);
+        if(!uncached) {
+            const IOReturn status=NativeAdrenoMaintainPhysicalPages(first,end-begin,op);
+            if(status)return status;
+            continue;
+        }
+        /* Runs of pages that may be cached are maintained together; the uncached pages between them are skipped. */
+        uint64_t run=first;
+        for(uint64_t page=first;page<=last;page+=4096) {
+            if(page<last && !uncached(page))continue;
+            if(page>run) {
+                const IOReturn status=NativeAdrenoMaintainPhysicalPages(run,(size_t)(page-run),op);
+                if(status)return status;
+            }
+            if(page<last)native_adreno_uncached_skipped=native_adreno_uncached_skipped+4096;
+            run=page+4096;
+        }
     }
     return kIOReturnSuccess;
 }
