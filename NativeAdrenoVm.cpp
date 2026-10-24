@@ -16,6 +16,13 @@ static bool coherentMapping(unsigned writeback) {return writeback && native_adre
  * write-back mappings), and the CPU never touches their pixels while the GPU owns them: they were cleaned when mapped and need no
  * maintenance per submission, which cost about 60 ms per frame. */
 static bool importedUntouched(const NativeAdrenoMemory *memory) {return memory->imported() && native_adreno_io_coherent;}
+/* A board without IO coherence (fajita's A630) may still skip the per-submission maintenance of the imports the GPU writes (render
+ * targets: the render server's framebuffer and layers): they were cleaned when mapped, the owner does not touch their pixels while the
+ * GPU owns them, and their CPU readers map them write-combined (CoreAnimation's surfaces). Read-only imports (CPU-drawn layer contents)
+ * keep their maintenance. Set by the board (native_adreno_skip_written_imports). */
+extern "C" {volatile uint32_t native_adreno_skip_written_imports;}
+static bool writtenImportSkipped(const NativeAdrenoMemory *memory,uint32_t permissions)
+{return memory->imported() && native_adreno_skip_written_imports && (permissions&ArmSmmu4KWrite);}
 static bool overlap(uint64_t a,uint64_t ab,uint64_t b,uint64_t bb)
 {return a<b+bb && b<a+ab;}
 /* Mappings of one cache/shareability/privilege class may share pages; only pages shared across classes refuse. */
@@ -334,7 +341,7 @@ IOReturn NativeAdrenoVm::publishMapped()
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory)continue;
-        if(coherentMapping(m.writeback) || importedUntouched(m.memory)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
+        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         if(m.memory->publishForDevice(0,m.memory->bytes(),true,distrust_write_combined_))return fail(ArmSmmu4KIoError);
     }
     return kIOReturnSuccess;
@@ -345,7 +352,7 @@ IOReturn NativeAdrenoVm::acquireImported()
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory || !m.memory->imported() || !(m.permissions&ArmSmmu4KWrite))continue;
-        if(coherentMapping(m.writeback) || importedUntouched(m.memory)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;continue;}
+        if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;continue;}
         if(m.memory->acquireDeviceWrites(0,m.memory->bytes()))return fail(ArmSmmu4KIoError);
     }
     return kIOReturnSuccess;
