@@ -54,7 +54,14 @@ enum : UInt32 {NativeAdrenoHandoffBase=0x7000,NativeAdrenoHandoffLast=0x7003,Nat
                NativeAdrenoHandoffOpenType=0x4148};
 /* Open type 0x4148 is a connection that serves only the hand-off: it does not mount a GPU core, so it does not need (or take) a
  * GPU connection slot (the Vulkan driver holds one for as long as the Metal device lives). Same class, so the same sandbox admission. */
-extern "C" {pmap_t get_task_pmap(task_t);ppnum_t pmap_find_phys(pmap_t,addr64_t);boolean_t pmap_is_modified(ppnum_t);void pmap_clear_modify(ppnum_t);}
+extern "C" {boolean_t pmap_is_modified(ppnum_t);void pmap_clear_modify(ppnum_t);extern int (*native_adreno_page_modified)(uint64_t);}
+static int pageModified(uint64_t page)
+{
+    const ppnum_t pn=(ppnum_t)page;
+    if(!pmap_is_modified(pn))return 0;
+    pmap_clear_modify(pn);
+    return 1;
+}
 extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *in,size_t inSize,void *out,size_t outSize);
 /* Export (int-147): method NativeAdrenoExportMethod hands one in-order piece of a blob to the board's UFS log (kits/sheng/BootLog.c), which writes
  * the newest complete blob to its export area. The render server sends its pipeline caches this way, so a later image can be built with them.
@@ -573,6 +580,7 @@ IOReturn AGXDeviceUserClient::runInner(uint32_t method,const void *input,size_t 
             return kIOReturnBadArgument;
         NativeAdrenoAbiHostDirty request{};
         memcpy(&request,input,sizeof(request));
+        native_adreno_page_modified=pageModified;
         if(request.count>NativeAdrenoAbiDirtyRanges)return kIOReturnBadArgument;
         NativeAdrenoAbiHostDirtyReply reply{};
         /* By the import's pinned physical pages: the caller's pmap may no longer map them at the imported addresses (fajita: every

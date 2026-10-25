@@ -53,7 +53,9 @@ bool NativeAdrenoUserClient::importCovers(uint64_t address,uint64_t bytes) const
     }
     return false;
 }
-extern "C" {boolean_t pmap_is_modified(ppnum_t);void pmap_clear_modify(ppnum_t);}
+/* The board's page-modified test (NativeAdrenoPublish.cpp, the kernel's pmap): 1 written since the last test (and cleared), 0 not. Unset
+ * (a host build), every page reads as written. */
+extern "C" {int (*native_adreno_page_modified)(uint64_t page)=nullptr;}
 bool NativeAdrenoUserClient::importModified(uint64_t address,uint64_t bytes,bool *covered,uint32_t *pages,uint32_t *modified)
 {
     *covered=false;
@@ -69,9 +71,9 @@ bool NativeAdrenoUserClient::importModified(uint64_t address,uint64_t bytes,bool
             const uint64_t from=spans[s].offset>begin?spans[s].offset:begin,to=spans[s].offset+spans[s].bytes<end?spans[s].offset+spans[s].bytes:end;
             for(uint64_t o=from&~UINT64_C(4095);o<to;o+=4096) {
                 if(o<spans[s].offset)continue;
-                const ppnum_t pn=(ppnum_t)((spans[s].physical+(o-spans[s].offset))>>12);
+                const uint64_t pn=(spans[s].physical+(o-spans[s].offset))>>12;
                 ++*pages;
-                if(pmap_is_modified(pn)){dirty=true;++*modified;pmap_clear_modify(pn);}
+                if(!native_adreno_page_modified || native_adreno_page_modified(pn)){dirty=true;++*modified;}
             }
         }
         return dirty;
