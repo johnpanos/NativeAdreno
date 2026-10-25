@@ -41,7 +41,17 @@ void NativeAdrenoUserClient::clear(Entry &entry)
 {
     entry.handle=0;entry.mapped=0;entry.iova=0;entry.used=false;
     entry.mapped_state=false;entry.unreleasable=false;entry.imported=false;entry.metadata_bytes=0;
+    entry.import_address=0;entry.import_bytes=0;
     entry.token=0;entry.mapping_leases=0;
+}
+bool NativeAdrenoUserClient::importCovers(uint64_t address,uint64_t bytes) const
+{
+    for(size_t i=0;i<entry_count_;++i) {
+        const Entry &e=entries_[i];
+        if(e.used && e.imported && address>=e.import_address && bytes<=e.import_bytes && address-e.import_address<=e.import_bytes-bytes)
+            return true;
+    }
+    return false;
 }
 NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::free()
 {
@@ -230,6 +240,7 @@ IOReturn NativeAdrenoUserClient::importBo(const NativeAdrenoAbiBoImport *request
     }
     entry->used=true;entry->handle=next_handle_++;entry->token=(uint32_t)(entry-entries_)+1;
     entry->mapped=0;entry->iova=0;entry->mapped_state=false;entry->imported=true;
+    entry->import_address=request->address;entry->import_bytes=request->bytes;
     reply->handle=entry->handle;
     native_adreno_import_live[0]=native_adreno_import_live[0]+1;
     {

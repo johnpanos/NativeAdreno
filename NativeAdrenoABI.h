@@ -30,6 +30,9 @@ enum {
     NativeAdrenoMethodBoCpuUnmap = 14,
     NativeAdrenoMethodGetDeviceInfo = 15,
     NativeAdrenoMethodBoImport = 16,
+    /* Whether the CPU wrote any page of up to NativeAdrenoAbiDirtyRanges ranges of the caller's address space since the last query
+     * (each page's pmap modified bit, cleared by the query), for CPU-written textures the GPU copies from (NativeMetal). */
+    NativeAdrenoMethodHostDirty = 17,
     NativeAdrenoAbiMetadataBytes = 64,
     NativeAdrenoAbiMaxQueues = 8
 };
@@ -57,6 +60,16 @@ struct NativeAdrenoAbiBoAllocReply {
 struct NativeAdrenoAbiBoImport {
     uint64_t address;             /* 4KiB aligned */
     uint64_t bytes;               /* 4KiB multiple, <= max_bo_bytes */
+};
+enum {NativeAdrenoAbiDirtyRanges = 16};
+struct NativeAdrenoAbiHostDirty {
+    uint32_t count;               /* ranges used, <= NativeAdrenoAbiDirtyRanges */
+    uint32_t reserved;
+    uint64_t ranges[NativeAdrenoAbiDirtyRanges][2];   /* {address, bytes} in the caller's address space */
+};
+struct NativeAdrenoAbiHostDirtyReply {
+    uint32_t dirty;               /* bit i: range i had a page written since its last query, or a page not mapped */
+    uint32_t pages;               /* pages examined */
 };
 struct NativeAdrenoAbiBoMap {
     uint64_t handle;

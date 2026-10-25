@@ -54,6 +54,7 @@ enum : UInt32 {NativeAdrenoHandoffBase=0x7000,NativeAdrenoHandoffLast=0x7003,Nat
                NativeAdrenoHandoffOpenType=0x4148};
 /* Open type 0x4148 is a connection that serves only the hand-off: it does not mount a GPU core, so it does not need (or take) a
  * GPU connection slot (the Vulkan driver holds one for as long as the Metal device lives). Same class, so the same sandbox admission. */
+extern "C" {pmap_t get_task_pmap(task_t);ppnum_t pmap_find_phys(pmap_t,addr64_t);boolean_t pmap_is_modified(ppnum_t);void pmap_clear_modify(ppnum_t);}
 extern "C" IOReturn native_gop_handoff_call(uint32_t op,task_t task,const void *in,size_t inSize,void *out,size_t outSize);
 /* Export (int-147): method NativeAdrenoExportMethod hands one in-order piece of a blob to the board's UFS log (kits/sheng/BootLog.c), which writes
  * the newest complete blob to its export area. The render server sends its pipeline caches this way, so a later image can be built with them.
@@ -566,6 +567,34 @@ IOReturn AGXDeviceUserClient::runInner(uint32_t method,const void *input,size_t 
         if(leases>1)native_adreno_view_kept=native_adreno_view_kept+1;
         else dropViews(token);
     }
+    if(method==NativeAdrenoMethodHostDirty) {
+        /* In the caller's context: its pmap's pages. A page the pmap does not map counts as written (its contents are unknown). */
+        if(!input || input_size!=sizeof(NativeAdrenoAbiHostDirty) || !output || output_size!=sizeof(NativeAdrenoAbiHostDirtyReply))
+            return kIOReturnBadArgument;
+        NativeAdrenoAbiHostDirty request{};
+        memcpy(&request,input,sizeof(request));
+        if(request.count>NativeAdrenoAbiDirtyRanges)return kIOReturnBadArgument;
+        NativeAdrenoAbiHostDirtyReply reply{};
+        pmap_t pmap=get_task_pmap(current_task());
+        if(!pmap)return kIOReturnNotReady;
+        for(uint32_t i=0;i<request.count;++i) {
+            /* Only an import's pinned (wired) pages: never a pageable page's modified bit. A range outside every import reads as written. */
+            IOLockLock(g.lock);
+            const bool pinned=live_ && core_->importCovers(request.ranges[i][0],request.ranges[i][1]);
+            IOLockUnlock(g.lock);
+            if(!pinned){reply.dirty|=1u<<i;continue;}
+            const uint64_t start=request.ranges[i][0]&~(uint64_t)PAGE_MASK,end=request.ranges[i][0]+request.ranges[i][1];
+            if(request.ranges[i][1]>(1ull<<30) || end<request.ranges[i][0])return kIOReturnBadArgument;
+            for(uint64_t va=start;va<end;va+=PAGE_SIZE) {
+                const ppnum_t pn=pmap_find_phys(pmap,va);
+                ++reply.pages;
+                if(!pn){reply.dirty|=1u<<i;continue;}
+                if(pmap_is_modified(pn)){reply.dirty|=1u<<i;pmap_clear_modify(pn);}
+            }
+        }
+        memcpy(output,&reply,sizeof(reply));
+        return kIOReturnSuccess;
+    }
     if(method==NativeAdrenoMethodBoImport) {
         /* The pages belong to the task making this call (an external method runs in the caller's context). */
         if(!input || input_size!=sizeof(NativeAdrenoAbiBoImport) || !output || output_size!=sizeof(NativeAdrenoAbiBoAllocReply))
@@ -613,7 +642,8 @@ IOReturn AGXDeviceUserClient::externalMethod(uint32_t selector,IOExternalMethodA
         {&action,0,sizeof(NativeAdrenoAbiBoCpuMap),0,sizeof(NativeAdrenoAbiBoCpuMapReply)},
         {&action,0,sizeof(NativeAdrenoAbiBoCpuUnmap),0,0},
         {&action,0,0,0,sizeof(NativeAdrenoAbiDeviceInfo)},
-        {&action,0,sizeof(NativeAdrenoAbiBoImport),0,sizeof(NativeAdrenoAbiBoAllocReply)}};
+        {&action,0,sizeof(NativeAdrenoAbiBoImport),0,sizeof(NativeAdrenoAbiBoAllocReply)},
+        {&action,0,sizeof(NativeAdrenoAbiHostDirty),0,sizeof(NativeAdrenoAbiHostDirtyReply)}};
     native_adreno_metal_diag.ext_entries=native_adreno_metal_diag.ext_entries+1;
     if(selector<256)native_adreno_metal_diag.sel_bits[selector>>5]|=1u<<(selector&31);
     /* Tunnel. The sandbox resolves a filter policy for this class at open time and then admits only the selectors its profile lists,

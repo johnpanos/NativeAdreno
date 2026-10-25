@@ -25,6 +25,7 @@ class NativeAdrenoUserClient final {
         bool mapped_state=false;
         bool unreleasable=false;
         bool imported=false;
+        uint64_t import_address=0,import_bytes=0;   /* the caller's pages an import pinned */
         uint32_t metadata_bytes=0;
         uint32_t token=0;
         uint32_t mapping_leases=0;
@@ -86,6 +87,9 @@ public:
     /* BoImport: pins the caller's pages. Only the IOKit wrapper can call it, with the calling task; dispatch() refuses the method
      * because it has no task (the kernel mailbox path cannot import). */
     IOReturn importBo(const NativeAdrenoAbiBoImport *,void *task,NativeAdrenoAbiBoAllocReply *);
+    /* Whether [address, address+bytes) lies inside one live import's pinned pages (HostDirty only clears the modified bits of
+     * wired pages: a pageable page whose bit it cleared could be paged out as clean). */
+    bool importCovers(uint64_t address,uint64_t bytes) const;
     /* Unmaps if still mapped, then releases the backing object. A failure at
      * either step keeps the entry live and unmapped where possible. */
     IOReturn freeBo(const NativeAdrenoAbiBoFree *);
