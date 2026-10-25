@@ -70,6 +70,10 @@ struct NativeAdrenoAbiHostDirty {
 struct NativeAdrenoAbiHostDirtyReply {
     uint32_t dirty;               /* bit i: range i had a page written since its last query, or a page not mapped */
     uint32_t pages;               /* pages examined */
+    uint32_t uncovered;           /* ranges outside every live import (read as written) */
+    uint32_t unmapped;            /* pages the caller's pmap does not map (read as written) */
+    uint32_t modified;            /* pages whose modified bit was set */
+    uint32_t reserved;
 };
 struct NativeAdrenoAbiBoMap {
     uint64_t handle;

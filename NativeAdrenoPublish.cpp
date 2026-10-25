@@ -582,14 +582,14 @@ IOReturn AGXDeviceUserClient::runInner(uint32_t method,const void *input,size_t 
             IOLockLock(g.lock);
             const bool pinned=live_ && core_->importCovers(request.ranges[i][0],request.ranges[i][1]);
             IOLockUnlock(g.lock);
-            if(!pinned){reply.dirty|=1u<<i;continue;}
+            if(!pinned){reply.dirty|=1u<<i;++reply.uncovered;continue;}
             const uint64_t start=request.ranges[i][0]&~(uint64_t)PAGE_MASK,end=request.ranges[i][0]+request.ranges[i][1];
             if(request.ranges[i][1]>(1ull<<30) || end<request.ranges[i][0])return kIOReturnBadArgument;
             for(uint64_t va=start;va<end;va+=PAGE_SIZE) {
                 const ppnum_t pn=pmap_find_phys(pmap,va);
                 ++reply.pages;
-                if(!pn){reply.dirty|=1u<<i;continue;}
-                if(pmap_is_modified(pn)){reply.dirty|=1u<<i;pmap_clear_modify(pn);}
+                if(!pn){reply.dirty|=1u<<i;++reply.unmapped;continue;}
+                if(pmap_is_modified(pn)){reply.dirty|=1u<<i;++reply.modified;pmap_clear_modify(pn);}
             }
         }
         memcpy(output,&reply,sizeof(reply));
