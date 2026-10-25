@@ -50,7 +50,7 @@ enum : UInt32 {NativeAdrenoPluginOpenType=0x4147,NativeAdrenoTunnelMagic=0x4e544
  * original sandbox profiles admit this class but not the presenter's own service. Methods 0x7000 + the presenter's NGP_METHOD numbers (mode,
  * wait for a frame, complete it) are forwarded unchanged, without the GPU lock (a wait sleeps); memory type NativeAdrenoScanoutType is the
  * writable scanout. Nothing here touches the GPU. */
-enum : UInt32 {NativeAdrenoHandoffBase=0x7000,NativeAdrenoHandoffLast=0x7003,NativeAdrenoScanoutType=0x5343,
+enum : UInt32 {NativeAdrenoHandoffBase=0x7000,NativeAdrenoHandoffLast=0x7003,NativeAdrenoScanoutType=0x5343,NativeAdrenoScanoutBackType=0x5344,
                NativeAdrenoHandoffOpenType=0x4148};
 /* Open type 0x4148 is a connection that serves only the hand-off: it does not mount a GPU core, so it does not need (or take) a
  * GPU connection slot (the Vulkan driver holds one for as long as the Metal device lives). Same class, so the same sandbox admission. */
@@ -70,6 +70,8 @@ enum : UInt32 {NativeAdrenoExportMethod=0x7100,NativeAdrenoExportMaxPiece=3968};
 extern "C" int boot_log_export_put(uint32_t generation,uint32_t total,uint32_t offset,const void *data,uint32_t size) __attribute__((weak_import));
 extern "C" {volatile uint32_t native_adreno_export_stats[4];}   /* [0] pieces taken, [1] refused, [2] last generation, [3] its total bytes */
 extern "C" IOMemoryDescriptor *native_gop_handoff_memory(void);
+/* The display hand-off's back buffer (fajita-fb-flip=1), memory type NativeAdrenoScanoutBackType; weak: boards without it. */
+extern "C" IOMemoryDescriptor *native_gop_handoff_back_memory(void) __attribute__((weak));
 
 /* Mailbox: a last-resort command channel for a sandbox that admits no external-method selector at all. It is one shared page (memory
  * type NativeAdrenoMailboxType through IOConnectMapMemory64, which the selector filter does not cover) and a kernel poller that runs
@@ -380,6 +382,14 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
         if(!scanout)return kIOReturnNotReady;
         *memory=scanout;                        /* already retained for the caller */
         *options=kIOMapAnywhere|kIOMapInhibitCache;   /* firmware framebuffer: device memory, never cached by the CPU */
+        return kIOReturnSuccess;
+    }
+    if(type==NativeAdrenoScanoutBackType) {
+        if(!live_ && !handoffOnly_)return kIOReturnNotReady;
+        IOMemoryDescriptor *back=native_gop_handoff_back_memory?native_gop_handoff_back_memory():nullptr;
+        if(!back)return kIOReturnUnsupported;
+        *memory=back;                           /* already retained for the caller */
+        *options=kIOMapAnywhere|kIOMapInhibitCache;
         return kIOReturnSuccess;
     }
     if(type==NativeAdrenoMailboxType) {
