@@ -575,22 +575,17 @@ IOReturn AGXDeviceUserClient::runInner(uint32_t method,const void *input,size_t 
         memcpy(&request,input,sizeof(request));
         if(request.count>NativeAdrenoAbiDirtyRanges)return kIOReturnBadArgument;
         NativeAdrenoAbiHostDirtyReply reply{};
-        pmap_t pmap=get_task_pmap(current_task());
-        if(!pmap)return kIOReturnNotReady;
+        /* By the import's pinned physical pages: the caller's pmap may no longer map them at the imported addresses (fajita: every
+         * page of the wallpaper's imports read unmapped there), and a write through any mapping sets the page's modified bit. */
         for(uint32_t i=0;i<request.count;++i) {
-            /* Only an import's pinned (wired) pages: never a pageable page's modified bit. A range outside every import reads as written. */
+            if(request.ranges[i][1]>(1ull<<30))return kIOReturnBadArgument;
+            bool covered=false;uint32_t modified=0;
             IOLockLock(g.lock);
-            const bool pinned=live_ && core_->importCovers(request.ranges[i][0],request.ranges[i][1]);
+            const bool dirty=live_ && core_->importModified(request.ranges[i][0],request.ranges[i][1],&covered,&reply.pages,&modified);
             IOLockUnlock(g.lock);
-            if(!pinned){reply.dirty|=1u<<i;++reply.uncovered;continue;}
-            const uint64_t start=request.ranges[i][0]&~(uint64_t)PAGE_MASK,end=request.ranges[i][0]+request.ranges[i][1];
-            if(request.ranges[i][1]>(1ull<<30) || end<request.ranges[i][0])return kIOReturnBadArgument;
-            for(uint64_t va=start;va<end;va+=PAGE_SIZE) {
-                const ppnum_t pn=pmap_find_phys(pmap,va);
-                ++reply.pages;
-                if(!pn){reply.dirty|=1u<<i;++reply.unmapped;continue;}
-                if(pmap_is_modified(pn)){reply.dirty|=1u<<i;++reply.modified;pmap_clear_modify(pn);}
-            }
+            reply.modified+=modified;
+            if(!covered){reply.dirty|=1u<<i;++reply.uncovered;}
+            else if(dirty)reply.dirty|=1u<<i;
         }
         memcpy(output,&reply,sizeof(reply));
         return kIOReturnSuccess;

@@ -90,6 +90,9 @@ public:
     /* Whether [address, address+bytes) lies inside one live import's pinned pages (HostDirty only clears the modified bits of
      * wired pages: a pageable page whose bit it cleared could be paged out as clean). */
     bool importCovers(uint64_t address,uint64_t bytes) const;
+    /* The pinned physical pages of the import holding [address, address+bytes): whether any has its modified bit set (each such bit
+     * cleared), by physical page, whatever maps it. False when no live import holds the range (*covered false). */
+    bool importModified(uint64_t address,uint64_t bytes,bool *covered,uint32_t *pages,uint32_t *modified);
     /* Unmaps if still mapped, then releases the backing object. A failure at
      * either step keeps the entry live and unmapped where possible. */
     IOReturn freeBo(const NativeAdrenoAbiBoFree *);

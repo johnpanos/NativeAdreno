@@ -53,6 +53,31 @@ bool NativeAdrenoUserClient::importCovers(uint64_t address,uint64_t bytes) const
     }
     return false;
 }
+extern "C" {boolean_t pmap_is_modified(ppnum_t);void pmap_clear_modify(ppnum_t);}
+bool NativeAdrenoUserClient::importModified(uint64_t address,uint64_t bytes,bool *covered,uint32_t *pages,uint32_t *modified)
+{
+    *covered=false;
+    for(size_t i=0;i<entry_count_;++i) {
+        Entry &e=entries_[i];
+        if(!e.used || !e.imported || address<e.import_address || bytes>e.import_bytes || address-e.import_address>e.import_bytes-bytes)
+            continue;
+        *covered=true;
+        bool dirty=false;
+        const uint64_t begin=(address-e.import_address)&~UINT64_C(4095),end=address-e.import_address+bytes;
+        const NativeAdrenoPhysicalSpan *spans=e.memory.spans();
+        for(size_t s=0;s<e.memory.spanCount();++s) {
+            const uint64_t from=spans[s].offset>begin?spans[s].offset:begin,to=spans[s].offset+spans[s].bytes<end?spans[s].offset+spans[s].bytes:end;
+            for(uint64_t o=from&~UINT64_C(4095);o<to;o+=4096) {
+                if(o<spans[s].offset)continue;
+                const ppnum_t pn=(ppnum_t)((spans[s].physical+(o-spans[s].offset))>>12);
+                ++*pages;
+                if(pmap_is_modified(pn)){dirty=true;++*modified;pmap_clear_modify(pn);}
+            }
+        }
+        return dirty;
+    }
+    return false;
+}
 NativeAdrenoUserClient::Entry *NativeAdrenoUserClient::free()
 {
     for(size_t i=0;i<entry_count_;++i)if(!entries_[i].used)return &entries_[i];
