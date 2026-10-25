@@ -43,6 +43,9 @@ class NativeAdrenoVm final {
         uint64_t handle=0,iova=0;
         size_t spans=0,mapped_spans=0;
         unsigned permissions=0,writeback=0,shareability=0,jobs=0;
+        /* a job that may write it was submitted since its last acquire: acquireImported maintains only these (fajita leakwatch: every
+         * writable import was maintained after every completed job, and the cost grew with backboardd's live imports) */
+        bool acquire=false;
     };
     Mapping *mappings_=nullptr;
     /* handle -> slot + 1, open addressing with linear probing (load at most one half): find without scanning the slots (fajita

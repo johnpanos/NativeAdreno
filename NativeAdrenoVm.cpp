@@ -420,8 +420,9 @@ IOReturn NativeAdrenoVm::acquireImported()
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     const uint64_t t0=native_adreno_vm_now_us?native_adreno_vm_now_us():0;
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
-        const Mapping &m=mappings_[i];
-        if(!m.memory || !m.memory->imported() || !(m.permissions&ArmSmmu4KWrite))continue;
+        Mapping &m=mappings_[i];
+        if(!m.memory || !m.memory->imported() || !(m.permissions&ArmSmmu4KWrite) || !m.acquire)continue;
+        if(!m.jobs)m.acquire=false;   /* no job holds it now: the completed jobs' writes are covered by this acquire */
         if(coherentMapping(m.writeback) || importedUntouched(m.memory) || writtenImportSkipped(m.memory,m.permissions)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;native_adreno_acquire_detail[5]=native_adreno_acquire_detail[5]+1;continue;}
         if(m.memory->acquireDeviceWrites(0,m.memory->bytes()))return fail(ArmSmmu4KIoError);
         native_adreno_acquire_detail[1]=native_adreno_acquire_detail[1]+1;native_adreno_acquire_detail[2]=native_adreno_acquire_detail[2]+m.memory->bytes();
@@ -521,6 +522,7 @@ IOReturn NativeAdrenoVm::holdJob(uint64_t handle)
     Mapping *record=find(handle);if(!record)return kIOReturnBadArgument;
     if(record->jobs==UINT32_MAX)return kIOReturnNoResources;
     IOReturn status=record->memory->holdForDevice();if(status)return status;
+    if(record->memory->imported() && (record->permissions&ArmSmmu4KWrite))record->acquire=true;
     ++record->jobs;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoVm::retireJobAfterCompletion(uint64_t handle)
