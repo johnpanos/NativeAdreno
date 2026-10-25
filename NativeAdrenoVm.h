@@ -45,6 +45,11 @@ class NativeAdrenoVm final {
         unsigned permissions=0,writeback=0,shareability=0,jobs=0;
     };
     Mapping *mappings_=nullptr;
+    /* handle -> slot + 1 by the handle's low bits (handles count up): find's first look, checked against the slot, a scan where a
+     * longer-lived handle shares the entry (fajita leakwatch: the scans of 4096 slots per handle, twice per handle per submission, made
+     * the retire sweep 3 -> 13 ms as backboardd's BOs grew 700 -> 1000). */
+    enum : size_t {IndexSize=16384};
+    uint16_t *index_=nullptr;
     NativeAdrenoVmRegion regions_[2]{};
     ArmSmmu4KLiveVisibility visibility_[2]{};
     ArmSmmu4KIo io_{};
@@ -65,6 +70,7 @@ class NativeAdrenoVm final {
     unsigned since_audit_=0;
     IOReturn fail(ArmSmmu4KStatus);
     Mapping *find(uint64_t);
+    const Mapping *find(uint64_t) const;
     void insert(size_t,unsigned);
     void erase(size_t,size_t,unsigned);
     IOReturn preflight(const NativeAdrenoMemory *,unsigned,uint64_t,unsigned,unsigned,unsigned) const;
