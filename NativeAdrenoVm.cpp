@@ -235,11 +235,33 @@ const NativeAdrenoVm::Mapping *NativeAdrenoVm::find(uint64_t handle) const
 {
     if(!handle || !mappings_)return nullptr;
     if(index_) {
-        const size_t slot=index_[handle&(IndexSize-1)];
-        if(slot && slot<=NativeAdrenoVmMaxObjects && mappings_[slot-1].handle==handle && mappings_[slot-1].memory)return &mappings_[slot-1];
+        for(size_t at=indexHash(handle),n=0;n<IndexSize && index_[at];at=(at+1)&(IndexSize-1),++n) {
+            const Mapping &m=mappings_[index_[at]-1];
+            if(m.handle==handle && m.memory)return &m;
+        }
+        return nullptr;
     }
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i)if(mappings_[i].handle==handle && mappings_[i].memory)return &mappings_[i];
     return nullptr;
+}
+void NativeAdrenoVm::indexInsert(uint64_t handle,size_t slot)
+{
+    if(!index_)return;
+    size_t at=indexHash(handle);while(index_[at])at=(at+1)&(IndexSize-1);
+    index_[at]=(uint16_t)(slot+1);
+}
+/* Linear probing's deletion: the entries after the hole that hash at or before it move back into it, so no probe stops early. */
+void NativeAdrenoVm::indexErase(uint64_t handle)
+{
+    if(!index_)return;
+    size_t at=indexHash(handle);
+    while(index_[at] && mappings_[index_[at]-1].handle!=handle)at=(at+1)&(IndexSize-1);
+    if(!index_[at])return;
+    index_[at]=0;
+    for(size_t next=(at+1)&(IndexSize-1);index_[next];next=(next+1)&(IndexSize-1)) {
+        const size_t home=indexHash(mappings_[index_[next]-1].handle);
+        if(((next-home)&(IndexSize-1))>=((next-at)&(IndexSize-1))) {index_[at]=index_[next];index_[next]=0;at=next;}
+    }
 }
 /* The n ranges just past the table's end (one mapping's spans, consecutive in IOVA and all in one gap) take their sorted place. */
 void NativeAdrenoVm::insert(size_t n,unsigned upper)
@@ -291,7 +313,7 @@ IOReturn NativeAdrenoVm::map(NativeAdrenoMemory *memory,unsigned upper,uint64_t 
     insert(spans,upper);record->mapped_spans=spans;result_.completed_spans=spans;
     clock.lap(0,4);clock.done(0,memory->bytes());
     record->handle=next_handle_++;*handle=record->handle;
-    if(index_)index_[record->handle&(IndexSize-1)]=(uint16_t)(record-mappings_+1);
+    indexInsert(record->handle,(size_t)(record-mappings_));
     result_.complete=true;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoVm::unmap(uint64_t handle)
@@ -335,7 +357,7 @@ IOReturn NativeAdrenoVm::unmap(uint64_t handle)
     clock.lap(1,4);
     if(record->memory->retireAfterQuiescence()!=kIOReturnSuccess)return fail(ArmSmmu4KStateMismatch);
     clock.lap(1,5);clock.done(1,record->memory->bytes());
-    if(index_ && index_[record->handle&(IndexSize-1)]==(uint16_t)(record-mappings_+1))index_[record->handle&(IndexSize-1)]=0;
+    indexErase(record->handle);
     *record={};--objects_;result_.complete=true;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoVm::describe(uint64_t handle,uint64_t *iova,size_t *bytes,

@@ -45,11 +45,14 @@ class NativeAdrenoVm final {
         unsigned permissions=0,writeback=0,shareability=0,jobs=0;
     };
     Mapping *mappings_=nullptr;
-    /* handle -> slot + 1 by the handle's low bits (handles count up): find's first look, checked against the slot, a scan where a
-     * longer-lived handle shares the entry (fajita leakwatch: the scans of 4096 slots per handle, twice per handle per submission, made
-     * the retire sweep 3 -> 13 ms as backboardd's BOs grew 700 -> 1000). */
-    enum : size_t {IndexSize=16384};
+    /* handle -> slot + 1, open addressing with linear probing (load at most one half): find without scanning the slots (fajita
+     * leakwatch: the scans of 4096 slots per handle, twice per handle per submission, made the retire sweep 3 -> 13 ms as backboardd's
+     * BOs grew 700 -> 1000). */
+    enum : size_t {IndexSize=8192};
     uint16_t *index_=nullptr;
+    static size_t indexHash(uint64_t handle) {return (size_t)((handle*0x9e3779b97f4a7c15ull)>>51);}
+    void indexInsert(uint64_t handle,size_t slot);
+    void indexErase(uint64_t handle);
     NativeAdrenoVmRegion regions_[2]{};
     ArmSmmu4KLiveVisibility visibility_[2]{};
     ArmSmmu4KIo io_{};
